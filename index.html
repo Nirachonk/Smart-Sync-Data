@@ -1,1 +1,184 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ระบบแมทช์รึป่าว — DMSx vs SAP</title>
+    <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --primary-purple: #4c1d95; 
+            --bg: #f1f5f9;
+            --card-bg: #ffffff;
+            --success: #22c55e;
+            --danger: #ef4444;
+            --border: #e2e8f0;
+        }
 
+        body { font-family: 'Sarabun', sans-serif; background-color: var(--bg); margin: 0; }
+        .hero-header { background: var(--primary-purple); color: white; padding: 2.5rem 1rem; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .container { max-width: 1000px; margin: 0 auto; padding: 2rem 1rem; }
+        
+        .grid-upload { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+        .card-upload { background: var(--card-bg); padding: 1.5rem; border-radius: 12px; border: 2px dashed var(--border); text-align: center; }
+        .card-upload:hover { border-color: var(--primary-purple); }
+        .card-upload h3 { margin-bottom: 1rem; color: var(--primary-purple); }
+
+        .btn-main { width: 100%; background: var(--primary-purple); color: white; border: none; padding: 1rem; border-radius: 8px; font-size: 1.2rem; font-weight: 700; cursor: pointer; transition: 0.2s; }
+        .btn-main:hover { background: #5b21b6; transform: translateY(-2px); }
+
+        .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin: 2rem 0; }
+        .stat-card { background: white; padding: 1.2rem; border-radius: 12px; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .stat-value { font-size: 1.8rem; font-weight: 700; display: block; }
+        
+        .table-container { background: white; border-radius: 12px; overflow-x: auto; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        table { width: 100%; border-collapse: collapse; min-width: 600px; }
+        th { background: #f8fafc; padding: 1rem; text-align: left; color: #64748b; }
+        td { padding: 1rem; border-bottom: 1px solid #f1f5f9; }
+        .badge { padding: 0.3rem 0.7rem; border-radius: 20px; font-size: 0.8rem; font-weight: 600; }
+        .badge-success { background: #dcfce7; color: #166534; }
+        .badge-error { background: #fee2e2; color: #991b1b; }
+    </style>
+</head>
+<body>
+
+<div class="hero-header">
+    <h1>ระบบ "แมทช์รึป่าว"</h1>
+    <p>ลองปั๊บ รู้เลย! ตรวจสอบสถานะมิเตอร์ DMSx vs SAP</p>
+</div>
+
+<div class="container">
+    <div class="grid-upload">
+        <div class="card-upload">
+            <h3>📁 ไฟล์ SAP</h3>
+            <input type="file" id="fileSap" accept=".csv, .xls, .xlsx">
+        </div>
+        <div class="card-upload">
+            <h3>📁 ไฟล์ DMSx</h3>
+            <input type="file" id="fileDmsx" accept=".csv, .xls, .xlsx">
+        </div>
+    </div>
+
+    <button class="btn-main" onclick="processData()">🚀 ตรวจสอบข้อมูล</button>
+
+    <div id="resultView" style="display: none;">
+        <div class="summary-grid">
+            <div class="stat-card">
+                <span class="stat-value" id="countDmsx">0</span>
+                <small>รายการ DMSx</small>
+            </div>
+            <div class="stat-card">
+                <span class="stat-value" id="countSap">0</span>
+                <small>รายการ SAP</small>
+            </div>
+            <div class="stat-card" style="color: var(--success)">
+                <span class="stat-value" id="countMatch">0</span>
+                <small>ข้อมูลตรงกัน</small>
+            </div>
+            <div class="stat-card" style="color: var(--danger)">
+                <span class="stat-value" id="countMismatch">0</span>
+                <small>ไม่ตรงกัน (Human Error)</small>
+            </div>
+        </div>
+
+        <div class="table-container">
+            <table id="resultTable">
+                <thead>
+                    <tr>
+                        <th>หมายเลขผู้ใช้ไฟ</th>
+                        <th>Pea No</th>
+                        <th>สถานะ (SAP)</th>
+                        <th>สถานะ (DMSx)</th>
+                        <th>ผลลัพธ์</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    // ฟังก์ชันอ่านไฟล์ทั้ง CSV และ Excel
+    async function readFileData(file) {
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const data = new Uint8Array(e.target.result);
+                const workbook = XLSX.read(data, { type: 'array' });
+                const firstSheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[firstSheetName];
+                // แปลงเป็น JSON โดยให้แถวแรกเป็น Header
+                resolve(XLSX.utils.sheet_to_json(worksheet, { defval: "" }));
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    }
+
+    // ฟังก์ชันช่วยทำความสะอาดชื่อ Column (ลดปัญหาเรื่องเคาะวรรค)
+    function cleanKey(obj, targetKey) {
+        const foundKey = Object.keys(obj).find(k => k.trim().includes(targetKey));
+        return foundKey ? obj[foundKey].toString().trim() : "";
+    }
+
+    async function processData() {
+        const fSap = document.getElementById('fileSap').files[0];
+        const fDmsx = document.getElementById('fileDmsx').files[0];
+
+        if (!fSap || !fDmsx) {
+            alert("กรุณาอัปโหลดไฟล์ให้ครบทั้ง SAP และ DMSx ค่ะ");
+            return;
+        }
+
+        const dataSap = await readFileData(fSap);
+        const dataDmsx = await readFileData(fDmsx);
+
+        let mCount = 0, misCount = 0;
+        const tbody = document.querySelector("#resultTable tbody");
+        tbody.innerHTML = "";
+
+        // วนลูปเช็คโดยอิงจาก SAP เป็นหลัก หรือจะเลือกเช็คฝั่งที่มีข้อมูลก็ได้
+        dataSap.forEach(sapItem => {
+            const sapId = cleanKey(sapItem, "หมายเลขผู้ใช้ไฟ");
+            const sapPea = cleanKey(sapItem, "Pea No");
+            const sapStatus = cleanKey(sapItem, "สถานะ");
+
+            // ค้นหาใน DMSx ที่หมายเลขผู้ใช้ไฟ และ Pea No ตรงกัน
+            const dmsxItem = dataDmsx.find(d => 
+                cleanKey(d, "หมายเลขผู้ใช้ไฟ") === sapId && 
+                cleanKey(d, "Pea No") === sapPea
+            );
+
+            if (dmsxItem) {
+                const dmsxStatus = cleanKey(dmsxItem, "สถานะ");
+                const isMatch = (sapStatus === dmsxStatus);
+
+                isMatch ? mCount++ : misCount++;
+
+                const row = `
+                    <tr>
+                        <td>${sapId}</td>
+                        <td style="font-family:monospace"><b>${sapPea}</b></td>
+                        <td>${sapStatus}</td>
+                        <td>${dmsxStatus}</td>
+                        <td>
+                            <span class="badge ${isMatch ? 'badge-success' : 'badge-error'}">
+                                ${isMatch ? '✓ ตรงกัน' : '✗ ไม่ตรงกัน'}
+                            </span>
+                        </td>
+                    </tr>`;
+                tbody.insertAdjacentHTML('beforeend', row);
+            }
+        });
+
+        document.getElementById('countDmsx').innerText = dataDmsx.length;
+        document.getElementById('countSap').innerText = dataSap.length;
+        document.getElementById('countMatch').innerText = mCount;
+        document.getElementById('countMismatch').innerText = misCount;
+        document.getElementById('resultView').style.display = 'block';
+    }
+</script>
+
+</body>
+</html>

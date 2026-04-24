@@ -100,26 +100,75 @@
 </div>
 
 <script>
+    const FIELD_ALIASES = {
+        customerNo: ["หมายเลขผู้ใช้ไฟ", "CA"],
+        peaNo: ["Pea No", "มิเตอร์"],
+        status: ["สถานะ"]
+    };
+
     // ฟังก์ชันอ่านไฟล์ทั้ง CSV และ Excel
     async function readFileData(file) {
         return new Promise((resolve) => {
             const reader = new FileReader();
             reader.onload = (e) => {
                 const data = new Uint8Array(e.target.result);
-                const workbook = XLSX.read(data, { type: 'array' });
+                const workbook = XLSX.read(data, {
+                    type: 'array',
+                    raw: false,
+                    dense: false
+                });
                 const firstSheetName = workbook.SheetNames[0];
                 const worksheet = workbook.Sheets[firstSheetName];
                 // แปลงเป็น JSON โดยให้แถวแรกเป็น Header
-                resolve(XLSX.utils.sheet_to_json(worksheet, { defval: "" }));
+                const rows = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
+
+                console.log("[UPLOAD] อ่านไฟล์สำเร็จ", {
+                    fileName: file.name,
+                    sheetName: firstSheetName,
+                    totalRows: rows.length,
+                    preview: rows.slice(0, 5)
+                });
+
+                resolve(rows);
             };
             reader.readAsArrayBuffer(file);
         });
     }
 
-    // ฟังก์ชันช่วยทำความสะอาดชื่อ Column (ลดปัญหาเรื่องเคาะวรรค)
-    function cleanKey(obj, targetKey) {
-        const foundKey = Object.keys(obj).find(k => k.trim().includes(targetKey));
-        return foundKey ? obj[foundKey].toString().trim() : "";
+    function normalizeValue(value) {
+        return String(value ?? "")
+            .replace(/^\uFEFF/, "")
+            .replace(/^'+/, "")
+            .replace(/\s+/g, " ")
+            .trim();
+    }
+
+    function findColumnValue(obj, aliases) {
+        const foundKey = Object.keys(obj).find(key => {
+            const normalizedKey = normalizeValue(key).toLowerCase();
+            return aliases.some(alias => normalizedKey.includes(normalizeValue(alias).toLowerCase()));
+        });
+
+        return foundKey ? normalizeValue(obj[foundKey]) : "";
+    }
+
+    function getMissingColumns(rows, label) {
+        if (!rows.length) {
+            return [`ไม่พบข้อมูลในไฟล์ ${label}`];
+        }
+
+        const headers = Object.keys(rows[0]).map(header => normalizeValue(header).toLowerCase());
+        return Object.entries(FIELD_ALIASES)
+            .filter(([, aliases]) =>
+                !aliases.some(alias =>
+                    headers.some(header => header.includes(normalizeValue(alias).toLowerCase()))
+                )
+            )
+            .map(([fieldName, aliases]) => `${fieldName}: ${aliases.join(" / ")}`);
+    }
+
+    function buildMatchKey(customerNo, peaNo) {
+        return `${normalizeValue(customerNo)}|${normalizeValue(peaNo)}`;
     }
 
     async function processData() {
@@ -133,28 +182,85 @@
 
         const dataSap = await readFileData(fSap);
         const dataDmsx = await readFileData(fDmsx);
+        const sapMissingColumns = getMissingColumns(dataSap, "SAP");
+        const dmsxMissingColumns = getMissingColumns(dataDmsx, "DMSx");
+
+        if (sapMissingColumns.length || dmsxMissingColumns.length) {
+            console.log("[VALIDATION] ตรวจพบคอลัมน์ที่ไม่พร้อมใช้งาน", {
+                sapMissingColumns,
+                dmsxMissingColumns
+            });
+            alert("โครงสร้างไฟล์ไม่ถูกต้อง กรุณาตรวจสอบคอลัมน์ หมายเลขผู้ใช้ไฟ, Pea No และ สถานะ");
+            return;
+        }
+
+        console.log("[PROCESS] เริ่มประมวลผลข้อมูล", {
+            sapFile: fSap.name,
+            dmsxFile: fDmsx.name,
+            sapRows: dataSap.length,
+            dmsxRows: dataDmsx.length
+        });
 
         let mCount = 0, misCount = 0;
         const tbody = document.querySelector("#resultTable tbody");
         tbody.innerHTML = "";
+        const dmsxIndex = new Map();
 
-        // วนลูปเช็คโดยอิงจาก SAP เป็นหลัก หรือจะเลือกเช็คฝั่งที่มีข้อมูลก็ได้
-        dataSap.forEach(sapItem => {
-            const sapId = cleanKey(sapItem, "หมายเลขผู้ใช้ไฟ");
-            const sapPea = cleanKey(sapItem, "Pea No");
-            const sapStatus = cleanKey(sapItem, "สถานะ");
-
-            // ค้นหาใน DMSx ที่หมายเลขผู้ใช้ไฟ และ Pea No ตรงกัน
-            const dmsxItem = dataDmsx.find(d => 
-                cleanKey(d, "หมายเลขผู้ใช้ไฟ") === sapId && 
-                cleanKey(d, "Pea No") === sapPea
+        dataDmsx.forEach((dmsxItem, index) => {
+            const key = buildMatchKey(
+                findColumnValue(dmsxItem, FIELD_ALIASES.customerNo),
+                findColumnValue(dmsxItem, FIELD_ALIASES.peaNo)
             );
 
+            if (!key || key === "|") {
+                console.log("[INDEX] ข้ามข้อมูล DMSx ที่ key ไม่สมบูรณ์", {
+                    rowNumber: index + 2,
+                    rowData: dmsxItem
+                });
+                return;
+            }
+
+            if (!dmsxIndex.has(key)) {
+                dmsxIndex.set(key, dmsxItem);
+            } else {
+                console.log("[INDEX] พบข้อมูล DMSx ซ้ำ key เดิม", {
+                    rowNumber: index + 2,
+                    key,
+                    rowData: dmsxItem
+                });
+            }
+        });
+
+        console.log("[INDEX] สร้างดัชนี DMSx สำเร็จ", {
+            indexedRows: dmsxIndex.size,
+            sourceRows: dataDmsx.length
+        });
+
+        // วนลูปเช็คโดยอิงจาก SAP เป็นหลัก หรือจะเลือกเช็คฝั่งที่มีข้อมูลก็ได้
+        dataSap.forEach((sapItem, index) => {
+            const sapId = findColumnValue(sapItem, FIELD_ALIASES.customerNo);
+            const sapPea = findColumnValue(sapItem, FIELD_ALIASES.peaNo);
+            const sapStatus = findColumnValue(sapItem, FIELD_ALIASES.status);
+            const matchKey = buildMatchKey(sapId, sapPea);
+
+            // ค้นหาใน DMSx ที่หมายเลขผู้ใช้ไฟ และ Pea No ตรงกัน
+            const dmsxItem = dmsxIndex.get(matchKey);
+
             if (dmsxItem) {
-                const dmsxStatus = cleanKey(dmsxItem, "สถานะ");
+                const dmsxStatus = findColumnValue(dmsxItem, FIELD_ALIASES.status);
                 const isMatch = (sapStatus === dmsxStatus);
 
                 isMatch ? mCount++ : misCount++;
+
+                console.log("[MATCH]", {
+                    rowNumber: index + 2,
+                    key: matchKey,
+                    sapId,
+                    sapPea,
+                    sapStatus,
+                    dmsxStatus,
+                    result: isMatch ? "MATCH" : "MISMATCH"
+                });
 
                 const row = `
                     <tr>
@@ -169,7 +275,22 @@
                         </td>
                     </tr>`;
                 tbody.insertAdjacentHTML('beforeend', row);
+            } else {
+                console.log("[MATCH] ไม่พบข้อมูลคู่ใน DMSx", {
+                    rowNumber: index + 2,
+                    key: matchKey,
+                    sapId,
+                    sapPea,
+                    sapStatus
+                });
             }
+        });
+
+        console.log("[SUMMARY] สรุปผลการจับคู่", {
+            sapRows: dataSap.length,
+            dmsxRows: dataDmsx.length,
+            matchCount: mCount,
+            mismatchCount: misCount
         });
 
         document.getElementById('countDmsx').innerText = dataDmsx.length;
